@@ -1,4 +1,4 @@
-# Family Shopping List
+# HomeNeeds
 
 A small self-hosted webapp for a family of 4 to share a single shopping list. Anyone can add items from their phone or laptop, and whoever goes to the store just pulls up the page and checks things off. Changes sync to everyone's device in real time (Server-Sent Events).
 
