@@ -1,0 +1,18 @@
+services:
+  family-shopping-list:
+    build: .
+    image: family-shopping-list:latest
+    container_name: family-shopping-list
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

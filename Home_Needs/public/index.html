@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Family Shopping List</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='54'%3E%F0%9F%9B%92%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Family Shopping List</h1>
+    <div class="who">
+      <label for="whoami">You:</label>
+      <input id="whoami" type="text" autocomplete="off" maxlength="20" placeholder="name" />
+    </div>
+  </header>
+
+  <main>
+    <form id="add-form" autocomplete="off">
+      <input id="f-name" name="name" type="text" placeholder="Add an item…" required maxlength="80" />
+      <input id="f-qty"  name="quantity" type="text" placeholder="qty (e.g. 2, 1lb)" maxlength="40" />
+      <input id="f-note" name="notes" type="text" placeholder="notes (brand, aisle…)" maxlength="200" />
+      <button type="submit">Add</button>
+    </form>
+
+    <section id="list-wrap">
+      <div class="list-header">
+        <h2>To buy <span id="count-todo" class="count">0</span></h2>
+      </div>
+      <ul id="list-todo" class="items"></ul>
+
+      <div class="list-header done-header">
+        <h2>In the cart <span id="count-done" class="count">0</span></h2>
+        <button id="clear-done" type="button" class="ghost" hidden>Clear purchased</button>
+      </div>
+      <ul id="list-done" class="items done"></ul>
+
+      <p id="empty" class="empty" hidden>Nothing on the list yet. Add the first item above.</p>
+    </section>
+  </main>
+
+  <div id="conn" class="conn" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
