@@ -1,0 +1,18 @@
+{
+  "name": "home-needs",
+  "version": "1.1.0",
+  "description": "Shared family shopping list — self-hosted PWA.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "qrcode": "^1.5.4"
+  }
+}
