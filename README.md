@@ -2,12 +2,13 @@
 
 A small self-hosted webapp for a family of 4 to share a single shopping list. Anyone can add items from their phone or laptop, and whoever goes to the store just pulls up the page and checks things off. Changes sync to everyone's device in real time (Server-Sent Events).
 
-## Features (v1)
+## Features
 
 - Add, edit, and remove items
 - Quantity and free-text notes per item (e.g. `2` / `whole wheat`)
 - Check off items while shopping — they move to an "In the cart" section
-- `Clear purchased` button to wipe out the checked items when you're done
+- **Favorites (★)** — star any item to save it as a shared family favorite. A collapsible "Favorites" panel above the list lets anyone re-add a favorite to the list with one tap (saved quantity and notes come along)
+- **Done shopping** button — big primary button that clears the entire cart in one tap when you're back from the store
 - Optional per-device "You:" name — items are tagged with who added them
 - Real-time sync across all connected devices; offline changes reconcile on refocus
 - Mobile-first layout
@@ -54,17 +55,21 @@ npm start
 
 ## HTTP API
 
-| Method | Path                          | Body                                              | Returns          |
-| ------ | ----------------------------- | ------------------------------------------------- | ---------------- |
-| GET    | `/api/items`                  | —                                                 | `{ items: [] }`  |
-| POST   | `/api/items`                  | `{ name, quantity?, notes?, addedBy? }`           | created item     |
-| PATCH  | `/api/items/:id`              | any of `{ name, quantity, notes, checked }`       | updated item     |
-| DELETE | `/api/items/:id`              | —                                                 | 204              |
-| POST   | `/api/items/clear-checked`    | —                                                 | `{ count }`      |
-| GET    | `/api/stream`                 | (SSE)                                             | live events      |
-| GET    | `/api/health`                 | —                                                 | `{ ok: true }`   |
+| Method | Path                          | Body                                              | Returns               |
+| ------ | ----------------------------- | ------------------------------------------------- | --------------------- |
+| GET    | `/api/items`                  | —                                                 | `{ items: [] }`       |
+| POST   | `/api/items`                  | `{ name, quantity?, notes?, addedBy? }`           | created item          |
+| PATCH  | `/api/items/:id`              | any of `{ name, quantity, notes, checked }`       | updated item          |
+| DELETE | `/api/items/:id`              | —                                                 | 204                   |
+| POST   | `/api/items/clear-checked`    | —                                                 | `{ count }`           |
+| GET    | `/api/favorites`              | —                                                 | `{ favorites: [] }`   |
+| POST   | `/api/favorites`              | `{ name, quantity?, notes? }`                     | created/updated favorite (idempotent on name, case-insensitive) |
+| DELETE | `/api/favorites/:id`          | —                                                 | 204                   |
+| DELETE | `/api/favorites?name=...`     | —                                                 | 204                   |
+| GET    | `/api/stream`                 | (SSE)                                             | live events           |
+| GET    | `/api/health`                 | —                                                 | `{ ok: true }`        |
 
-SSE event names: `item:created`, `item:updated`, `item:deleted`, `items:cleared-checked`.
+SSE event names: `item:created`, `item:updated`, `item:deleted`, `items:cleared-checked`, `favorite:created`, `favorite:deleted`.
 
 ## Configuration
 

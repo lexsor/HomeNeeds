@@ -6,9 +6,17 @@
   const countTodo = $('#count-todo');
   const countDone = $('#count-done');
   const emptyMsg = $('#empty');
-  const clearBtn = $('#clear-done');
+  const doneBtn  = $('#done-shopping');
   const conn = $('#conn');
   const whoami = $('#whoami');
+
+  // Favorites elements
+  const favWrap   = $('#favorites-wrap');
+  const favToggle = $('#favorites-toggle');
+  const favPanel  = $('#favorites-panel');
+  const favList   = $('#list-fav');
+  const favEmpty  = $('#fav-empty');
+  const countFav  = $('#count-fav');
 
   // --- roster (per-person color coding) -------------------------------------
   // Keys are lowercase for case-insensitive match. `label` is the display name
@@ -33,6 +41,19 @@
   // In-memory mirror of server state, keyed by id for quick updates from SSE.
   /** @type {Map<number, object>} */
   const byId = new Map();
+  /** @type {Map<number, object>}  favorites by id */
+  const favById = new Map();
+
+  // Favorites lookup by lowercase name — used to decide whether an item's
+  // star is filled in (already favorited) or hollow (can be saved).
+  function favByName(name) {
+    if (!name) return null;
+    const key = String(name).trim().toLowerCase();
+    for (const f of favById.values()) {
+      if (f.name.toLowerCase() === key) return f;
+    }
+    return null;
+  }
 
   function render() {
     const items = [...byId.values()].sort((a, b) => {
@@ -49,8 +70,68 @@
     }
     countTodo.textContent = String(nTodo);
     countDone.textContent = String(nDone);
-    clearBtn.hidden = nDone === 0;
+    doneBtn.hidden = nDone === 0;
     emptyMsg.hidden = (nTodo + nDone) > 0;
+  }
+
+  function renderFavorites() {
+    const favs = [...favById.values()].sort((a, b) =>
+      a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+    );
+    favList.innerHTML = '';
+    // Names already on the active list — used to dim/disable matching favorites
+    // so we don't double-add the same thing.
+    const onList = new Set(
+      [...byId.values()].map((it) => it.name.trim().toLowerCase())
+    );
+    for (const f of favs) {
+      const li = document.createElement('li');
+      li.className = 'fav';
+      const already = onList.has(f.name.toLowerCase());
+      if (already) li.classList.add('on-list');
+
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'fav-add';
+      add.title = already ? 'Already on the list' : 'Add to list';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'fav-name';
+      nameSpan.textContent = f.name;
+      add.appendChild(nameSpan);
+      if (f.quantity) {
+        const qtySpan = document.createElement('span');
+        qtySpan.className = 'fav-qty';
+        qtySpan.textContent = f.quantity;
+        add.appendChild(qtySpan);
+      }
+      if (f.notes) {
+        const noteSpan = document.createElement('span');
+        noteSpan.className = 'fav-note';
+        noteSpan.textContent = f.notes;
+        add.appendChild(noteSpan);
+      }
+      add.addEventListener('click', () => addFromFavorite(f));
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'fav-del';
+      del.title = 'Remove favorite';
+      del.setAttribute('aria-label', `Remove ${f.name} from favorites`);
+      del.textContent = '\u2715';
+      del.addEventListener('click', () => removeFavorite(f.id));
+
+      li.appendChild(add);
+      li.appendChild(del);
+      favList.appendChild(li);
+    }
+    countFav.textContent = String(favs.length);
+    favEmpty.hidden = favs.length > 0;
+    // Hide the whole panel when there are zero favs AND the panel is collapsed,
+    // so we don't show an empty chrome to a user who's never starred anything.
+    // Once the user expands it, we keep it visible so the "no favorites yet"
+    // hint can teach them what stars do.
+    const expanded = favToggle.getAttribute('aria-expanded') === 'true';
+    favWrap.hidden = favs.length === 0 && !expanded;
   }
 
   function renderItem(it) {
@@ -105,6 +186,21 @@
     // actions
     const actions = document.createElement('div');
     actions.className = 'actions';
+
+    // Star — toggle favorite for this item's name. Filled when favorited.
+    const starBtn = document.createElement('button');
+    starBtn.type = 'button';
+    const isFav = !!favByName(it.name);
+    starBtn.className = 'icon-btn star-btn' + (isFav ? ' favorited' : '');
+    starBtn.title = isFav ? 'Unfavorite' : 'Save as favorite';
+    starBtn.setAttribute('aria-label', starBtn.title);
+    starBtn.setAttribute('aria-pressed', isFav ? 'true' : 'false');
+    starBtn.innerHTML = `
+      <svg class="star-icon" viewBox="0 0 20 20" aria-hidden="true">
+        <polygon points="10,2 12.59,7.36 18.51,8.16 14.25,12.26 15.18,18.09 10,15.34 4.82,18.09 5.75,12.26 1.49,8.16 7.41,7.36"/>
+      </svg>`;
+    starBtn.addEventListener('click', () => toggleFavoriteForItem(it));
+
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.className = 'icon-btn';
@@ -117,6 +213,7 @@
     delBtn.title = 'Remove';
     delBtn.textContent = '\u2715';
     delBtn.addEventListener('click', () => removeItem(it.id));
+    actions.appendChild(starBtn);
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
 
@@ -189,6 +286,15 @@
     byId.clear();
     for (const it of items) byId.set(it.id, it);
     render();
+    renderFavorites(); // active list changed -> "already on list" badges may shift
+  }
+
+  async function loadFavorites() {
+    const { favorites } = await api('/api/favorites');
+    favById.clear();
+    for (const f of favorites) favById.set(f.id, f);
+    renderFavorites();
+    render(); // re-render items so star fills update
   }
 
   async function addItem({ name, quantity, notes }) {
@@ -205,6 +311,31 @@
   }
   async function clearChecked() {
     await api('/api/items/clear-checked', 'POST');
+  }
+
+  // --- favorites actions ----------------------------------------------------
+  async function toggleFavoriteForItem(it) {
+    const existing = favByName(it.name);
+    if (existing) {
+      await api(`/api/favorites/${existing.id}`, 'DELETE');
+    } else {
+      await api('/api/favorites', 'POST', { name: it.name, quantity: it.quantity, notes: it.notes });
+    }
+  }
+  async function removeFavorite(id) {
+    await api(`/api/favorites/${id}`, 'DELETE');
+  }
+  // Re-add a favorite to the active shopping list. Skip if it's already there
+  // (case-insensitive match) so a quick double-tap doesn't create duplicates.
+  async function addFromFavorite(f) {
+    const onList = [...byId.values()].some(
+      (it) => it.name.trim().toLowerCase() === f.name.toLowerCase()
+    );
+    if (onList) {
+      showConn(`${f.name} is already on the list`, false);
+      return;
+    }
+    await addItem({ name: f.name, quantity: f.quantity || '', notes: f.notes });
   }
 
   // --- wire up form ---------------------------------------------------------
@@ -225,8 +356,19 @@
     }
   });
 
-  clearBtn.addEventListener('click', () => {
-    if (confirm('Remove all checked-off items from the list?')) clearChecked();
+  doneBtn.addEventListener('click', () => {
+    const n = countDone.textContent;
+    if (confirm(`Clear all ${n} item(s) from the cart?`)) clearChecked();
+  });
+
+  // Favorites panel toggle (collapsed by default to keep the top of the
+  // screen quiet — it expands when the user wants to manage favorites).
+  favToggle.addEventListener('click', () => {
+    const expanded = favToggle.getAttribute('aria-expanded') === 'true';
+    favToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+    favPanel.hidden = expanded;
+    // Re-evaluate auto-hide of the whole panel chrome when collapsing back.
+    if (expanded) renderFavorites();
   });
 
   // --- Server-Sent Events ---------------------------------------------------
@@ -259,14 +401,28 @@
     es.addEventListener('items:cleared-checked', () => {
       loadAll();
     });
+    es.addEventListener('favorite:created', (e) => {
+      const f = JSON.parse(e.data); favById.set(f.id, f);
+      renderFavorites();
+      render(); // star fills depend on favorites map
+    });
+    es.addEventListener('favorite:deleted', (e) => {
+      const { id } = JSON.parse(e.data); favById.delete(id);
+      renderFavorites();
+      render();
+    });
   }
 
   // Refresh on tab refocus in case we missed events while suspended.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') loadAll();
+    if (document.visibilityState === 'visible') {
+      loadAll();
+      loadFavorites();
+    }
   });
 
   // --- boot -----------------------------------------------------------------
-  loadAll().catch(() => showConn('Could not reach server', true));
+  Promise.all([loadAll(), loadFavorites()])
+    .catch(() => showConn('Could not reach server', true));
   connect();
 })();

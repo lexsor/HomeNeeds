@@ -34,6 +34,26 @@
       <button type="submit">Add</button>
     </form>
 
+    <!-- Collapsible Favorites panel — shared across the family.
+         Tap a tile to one-click re-add it to the list. -->
+    <section id="favorites-wrap" hidden>
+      <button id="favorites-toggle" type="button" class="favorites-toggle" aria-expanded="false">
+        <span class="fav-toggle-label">
+          <svg class="star-icon" viewBox="0 0 20 20" aria-hidden="true">
+            <polygon points="10,2 12.59,7.36 18.51,8.16 14.25,12.26 15.18,18.09 10,15.34 4.82,18.09 5.75,12.26 1.49,8.16 7.41,7.36"/>
+          </svg>
+          Favorites <span id="count-fav" class="count">0</span>
+        </span>
+        <span class="fav-toggle-caret" aria-hidden="true">▾</span>
+      </button>
+      <div id="favorites-panel" class="favorites-panel" hidden>
+        <ul id="list-fav" class="favorites"></ul>
+        <p id="fav-empty" class="empty fav-empty" hidden>
+          No favorites yet. Tap the star on any item to save it here for next time.
+        </p>
+      </div>
+    </section>
+
     <section id="list-wrap">
       <div class="list-header">
         <h2>To buy <span id="count-todo" class="count">0</span></h2>
@@ -42,9 +62,14 @@
 
       <div class="list-header done-header">
         <h2>In the cart <span id="count-done" class="count">0</span></h2>
-        <button id="clear-done" type="button" class="ghost" hidden>Clear purchased</button>
       </div>
       <ul id="list-done" class="items done"></ul>
+
+      <!-- Big primary "Done shopping" button — clears everything in the cart
+           in one tap once you're back from the store. -->
+      <button id="done-shopping" type="button" class="done-shopping" hidden>
+        Done shopping — clear cart
+      </button>
 
       <p id="empty" class="empty" hidden>Nothing on the list yet. Add the first item above.</p>
     </section>

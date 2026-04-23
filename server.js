@@ -25,7 +25,23 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS favorites (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    notes      TEXT    NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  -- Case-insensitive unique index so we don't accumulate duplicates like
+  -- "Milk" / "milk" / "MILK" when different family members star the same thing.
+  CREATE UNIQUE INDEX IF NOT EXISTS favorites_name_nocase
+    ON favorites (name COLLATE NOCASE);
 `);
+
+const favoriteColumns = db.prepare(`PRAGMA table_info(favorites)`).all();
+if (!favoriteColumns.some((column) => column.name === 'quantity')) {
+  db.exec(`ALTER TABLE favorites ADD COLUMN quantity TEXT NOT NULL DEFAULT ''`);
+}
 
 const stmts = {
   listAll:    db.prepare('SELECT * FROM items ORDER BY checked ASC, created_at ASC'),
@@ -36,6 +52,15 @@ const stmts = {
   setChecked: db.prepare('UPDATE items SET checked = ?, updated_at = ? WHERE id = ?'),
   remove:     db.prepare('DELETE FROM items WHERE id = ?'),
   clearChecked: db.prepare('DELETE FROM items WHERE checked = 1'),
+
+  // favorites
+  favListAll:        db.prepare('SELECT * FROM favorites ORDER BY name COLLATE NOCASE ASC'),
+  favInsert:         db.prepare('INSERT INTO favorites (name, quantity, notes, created_at) VALUES (?, ?, ?, ?)'),
+  favGetById:        db.prepare('SELECT * FROM favorites WHERE id = ?'),
+  favGetByName:      db.prepare('SELECT * FROM favorites WHERE name = ? COLLATE NOCASE'),
+  favUpdate:         db.prepare('UPDATE favorites SET quantity = ?, notes = ? WHERE id = ?'),
+  favRemoveById:     db.prepare('DELETE FROM favorites WHERE id = ?'),
+  favRemoveByName:   db.prepare('DELETE FROM favorites WHERE name = ? COLLATE NOCASE'),
 };
 
 function rowToItem(r) {
@@ -48,6 +73,16 @@ function rowToItem(r) {
     addedBy: r.added_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+function rowToFavorite(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    quantity: r.quantity || '',
+    notes: r.notes,
+    createdAt: r.created_at,
   };
 }
 
@@ -119,6 +154,61 @@ app.post('/api/items/clear-checked', (req, res) => {
   const info = stmts.clearChecked.run();
   broadcast('items:cleared-checked', { count: info.changes });
   res.json({ count: info.changes });
+});
+
+// --- favorites --------------------------------------------------------------
+// Favorites are shared across the family (same model as items) and survive
+// across shopping trips. Star an item to save it; tap a favorite to re-add it
+// to the active list with its saved notes prefilled.
+
+app.get('/api/favorites', (req, res) => {
+  const favorites = stmts.favListAll.all().map(rowToFavorite);
+  res.json({ favorites });
+});
+
+app.post('/api/favorites', (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 80);
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const quantity = String(req.body?.quantity || '').trim().slice(0, 40);
+  const notes = String(req.body?.notes || '').trim().slice(0, 200);
+
+  // Idempotent: if a favorite with this name already exists (case-insensitive),
+  // update its notes rather than failing on the unique index.
+  const existing = stmts.favGetByName.get(name);
+  if (existing) {
+    if (quantity !== (existing.quantity || '') || notes !== existing.notes) {
+      stmts.favUpdate.run(quantity, notes, existing.id);
+    }
+    const fav = rowToFavorite(stmts.favGetById.get(existing.id));
+    broadcast('favorite:created', fav); // re-broadcast so all clients re-render
+    return res.status(200).json(fav);
+  }
+
+  const info = stmts.favInsert.run(name, quantity, notes, Date.now());
+  const fav = rowToFavorite(stmts.favGetById.get(info.lastInsertRowid));
+  broadcast('favorite:created', fav);
+  res.status(201).json(fav);
+});
+
+app.delete('/api/favorites/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const row = stmts.favGetById.get(id);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  stmts.favRemoveById.run(id);
+  broadcast('favorite:deleted', { id });
+  res.status(204).end();
+});
+
+// Convenience: unfavorite by name (case-insensitive). Lets the UI un-star
+// from the item row without having to know the favorite's id.
+app.delete('/api/favorites', (req, res) => {
+  const name = String(req.query?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name query param is required' });
+  const row = stmts.favGetByName.get(name);
+  if (!row) return res.status(204).end();
+  stmts.favRemoveById.run(row.id);
+  broadcast('favorite:deleted', { id: row.id });
+  res.status(204).end();
 });
 
 // Server-Sent Events — clients subscribe here for live updates.
