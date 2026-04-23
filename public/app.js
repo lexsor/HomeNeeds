@@ -1,4 +1,4 @@
-// Family Shopping List — client
+// HomeNeeds — client
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const listTodo = $('#list-todo');
@@ -10,7 +10,21 @@
   const conn = $('#conn');
   const whoami = $('#whoami');
 
-  // Who am I — stored in localStorage so the "added by" chip persists on this device.
+  // --- roster (per-person color coding) -------------------------------------
+  // Keys are lowercase for case-insensitive match. `label` is the display name
+  // used in the colored chip; `cls` is the CSS class that drives the color.
+  const ROSTER = {
+    'dad':    { label: 'Dad',    cls: 'by-dad'    },
+    'mom':    { label: 'Mom',    cls: 'by-mom'    },
+    'keaton': { label: 'Keaton', cls: 'by-keaton' },
+    'juls':   { label: 'Juls',   cls: 'by-juls'   },
+  };
+  function rosterFor(name) {
+    if (!name) return null;
+    return ROSTER[String(name).trim().toLowerCase()] || null;
+  }
+
+  // Who am I — stored in localStorage so the "added by" tag persists on this device.
   whoami.value = localStorage.getItem('fsl:whoami') || '';
   whoami.addEventListener('input', () => {
     localStorage.setItem('fsl:whoami', whoami.value.trim());
@@ -41,7 +55,8 @@
 
   function renderItem(it) {
     const li = document.createElement('li');
-    li.className = 'item' + (it.checked ? ' checked' : '');
+    const role = rosterFor(it.addedBy);
+    li.className = 'item' + (it.checked ? ' checked' : '') + (role ? ' ' + role.cls : '');
     li.dataset.id = String(it.id);
 
     // checkbox
@@ -67,13 +82,23 @@
       name.appendChild(q);
     }
     body.appendChild(name);
+
+    // meta line: optional note text + colored "added by" chip
     if (it.notes || it.addedBy) {
-      const meta = document.createElement('span');
+      const meta = document.createElement('div');
       meta.className = 'meta';
-      const parts = [];
-      if (it.notes) parts.push(it.notes);
-      if (it.addedBy) parts.push('— ' + it.addedBy);
-      meta.textContent = parts.join(' ');
+      if (it.notes) {
+        const note = document.createElement('span');
+        note.className = 'note';
+        note.textContent = it.notes;
+        meta.appendChild(note);
+      }
+      if (it.addedBy) {
+        const chip = document.createElement('span');
+        chip.className = 'by-chip' + (role ? ' ' + role.cls : '');
+        chip.textContent = role ? role.label : it.addedBy;
+        meta.appendChild(chip);
+      }
       body.appendChild(meta);
     }
 
@@ -90,7 +115,7 @@
     delBtn.type = 'button';
     delBtn.className = 'icon-btn danger';
     delBtn.title = 'Remove';
-    delBtn.textContent = '✕';
+    delBtn.textContent = '\u2715';
     delBtn.addEventListener('click', () => removeItem(it.id));
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -221,7 +246,6 @@
     es.addEventListener('open', () => showConn('Connected', false));
     es.addEventListener('error', () => {
       showConn('Reconnecting…', true);
-      // EventSource auto-reconnects; also resync state on reconnect.
     });
     es.addEventListener('item:created', (e) => {
       const it = JSON.parse(e.data); byId.set(it.id, it); render();
