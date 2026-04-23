@@ -156,6 +156,9 @@ main {
   position: relative;
   overflow: hidden;
 }
+.item.pending-sync {
+  border-style: dashed;
+}
 /* Colored left stripe based on who added the item. */
 .item.by-dad::before,
 .item.by-mom::before,
@@ -206,6 +209,10 @@ main {
   border-radius: 6px;
   padding: 1px 6px;
   border: 1px solid var(--line);
+}
+.item .qty.pending-badge {
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.12);
 }
 .item .meta {
   color: var(--ink-dim);

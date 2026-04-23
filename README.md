@@ -10,7 +10,8 @@ A small self-hosted webapp for a family of 4 to share a single shopping list. An
 - **Favorites (★)** — star any item to save it as a shared family favorite. A collapsible "Favorites" panel above the list lets anyone re-add a favorite to the list with one tap (saved quantity and notes come along)
 - **Done shopping** button — big primary button that clears the entire cart in one tap when you're back from the store
 - Optional per-device "You:" name — items are tagged with who added them
-- Real-time sync across all connected devices; offline changes reconcile on refocus
+- Real-time sync across all connected devices
+- Offline-first phone/PWA mode: the latest list and favorites are cached on-device, and changes made while offline sync back to the server when the phone reconnects
 - Mobile-first layout
 
 ## Stack

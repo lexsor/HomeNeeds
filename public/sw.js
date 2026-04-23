@@ -2,12 +2,12 @@
 // Strategy:
 //   * Static shell (HTML/CSS/JS/icons/manifest) -> stale-while-revalidate, fast loads + fresh on next visit
 //   * GET /api/*      -> network-first, fall back to cache when offline
-//   * Non-GET /api/*  -> network only (no point queuing mutations offline for a family list)
+//   * Non-GET /api/*  -> network only (the client queues writes locally and replays them later)
 //   * /api/stream     -> passthrough, never cache (SSE)
 //
 // Bump CACHE_VERSION to force clients to purge old caches after a deploy.
 
-const CACHE_VERSION = 'home-needs-v3';
+const CACHE_VERSION = 'home-needs-v4';
 const SHELL_CACHE   = `${CACHE_VERSION}-shell`;
 const API_CACHE     = `${CACHE_VERSION}-api`;
 

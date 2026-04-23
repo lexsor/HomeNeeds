@@ -6,46 +6,133 @@
   const countTodo = $('#count-todo');
   const countDone = $('#count-done');
   const emptyMsg = $('#empty');
-  const doneBtn  = $('#done-shopping');
+  const doneBtn = $('#done-shopping');
   const conn = $('#conn');
   const whoami = $('#whoami');
 
   // Favorites elements
-  const favWrap   = $('#favorites-wrap');
+  const favWrap = $('#favorites-wrap');
   const favToggle = $('#favorites-toggle');
-  const favPanel  = $('#favorites-panel');
-  const favList   = $('#list-fav');
-  const favEmpty  = $('#fav-empty');
-  const countFav  = $('#count-fav');
+  const favPanel = $('#favorites-panel');
+  const favList = $('#list-fav');
+  const favEmpty = $('#fav-empty');
+  const countFav = $('#count-fav');
+
+  const STORAGE_KEYS = {
+    whoami: 'fsl:whoami',
+    items: 'fsl:items-cache',
+    favorites: 'fsl:favorites-cache',
+    queue: 'fsl:pending-ops',
+    tempSeq: 'fsl:temp-seq',
+  };
+
+  const OP = {
+    ITEM_ADD: 'item:add',
+    ITEM_PATCH: 'item:patch',
+    ITEM_DELETE: 'item:delete',
+    ITEM_CLEAR_CHECKED: 'item:clearChecked',
+    FAVORITE_UPSERT: 'favorite:upsert',
+    FAVORITE_DELETE: 'favorite:delete',
+  };
 
   // --- roster (per-person color coding) -------------------------------------
-  // Keys are lowercase for case-insensitive match. `label` is the display name
-  // used in the colored chip; `cls` is the CSS class that drives the color.
   const ROSTER = {
-    'dad':    { label: 'Dad',    cls: 'by-dad'    },
-    'mom':    { label: 'Mom',    cls: 'by-mom'    },
-    'keaton': { label: 'Keaton', cls: 'by-keaton' },
-    'juls':   { label: 'Juls',   cls: 'by-juls'   },
+    dad: { label: 'Dad', cls: 'by-dad' },
+    mom: { label: 'Mom', cls: 'by-mom' },
+    keaton: { label: 'Keaton', cls: 'by-keaton' },
+    juls: { label: 'Juls', cls: 'by-juls' },
   };
   function rosterFor(name) {
     if (!name) return null;
     return ROSTER[String(name).trim().toLowerCase()] || null;
   }
 
-  // Who am I — stored in localStorage so the "added by" tag persists on this device.
-  whoami.value = localStorage.getItem('fsl:whoami') || '';
+  whoami.value = localStorage.getItem(STORAGE_KEYS.whoami) || '';
   whoami.addEventListener('input', () => {
-    localStorage.setItem('fsl:whoami', whoami.value.trim());
+    localStorage.setItem(STORAGE_KEYS.whoami, whoami.value.trim());
   });
 
-  // In-memory mirror of server state, keyed by id for quick updates from SSE.
-  /** @type {Map<number, object>} */
+  /** @type {Map<number|string, object>} */
   const byId = new Map();
-  /** @type {Map<number, object>}  favorites by id */
+  /** @type {Map<number|string, object>} */
   const favById = new Map();
+  /** @type {Array<object>} */
+  const pendingOps = readJson(STORAGE_KEYS.queue, []);
 
-  // Favorites lookup by lowercase name — used to decide whether an item's
-  // star is filled in (already favorited) or hollow (can be saved).
+  let es;
+  let connTimer;
+  let flushPromise = null;
+
+  function readJson(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function writeJson(key, value) {
+    localStorage.setItem(key, JSON.stringify(value));
+  }
+
+  function nextTempId(prefix) {
+    const seq = parseInt(localStorage.getItem(STORAGE_KEYS.tempSeq) || '0', 10) + 1;
+    localStorage.setItem(STORAGE_KEYS.tempSeq, String(seq));
+    return `${prefix}-${Date.now()}-${seq}`;
+  }
+
+  function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function persistItems() {
+    writeJson(STORAGE_KEYS.items, [...byId.values()]);
+  }
+
+  function persistFavorites() {
+    writeJson(STORAGE_KEYS.favorites, [...favById.values()]);
+  }
+
+  function persistQueue() {
+    writeJson(STORAGE_KEYS.queue, pendingOps);
+  }
+
+  function restoreCachedState() {
+    const cachedItems = readJson(STORAGE_KEYS.items, []);
+    const cachedFavorites = readJson(STORAGE_KEYS.favorites, []);
+
+    byId.clear();
+    for (const it of cachedItems) byId.set(it.id, it);
+
+    favById.clear();
+    for (const fav of cachedFavorites) favById.set(fav.id, fav);
+  }
+
+  function upsertPendingOp(op) {
+    pendingOps.push(op);
+    persistQueue();
+  }
+
+  function removePendingOps(predicate) {
+    let changed = false;
+    for (let i = pendingOps.length - 1; i >= 0; i -= 1) {
+      if (predicate(pendingOps[i])) {
+        pendingOps.splice(i, 1);
+        changed = true;
+      }
+    }
+    if (changed) persistQueue();
+  }
+
+  function findPendingItemAdd(id) {
+    return pendingOps.find((op) => op.type === OP.ITEM_ADD && op.tempId === id) || null;
+  }
+
+  function findPendingFavoriteUpsert(id) {
+    return pendingOps.find((op) => op.type === OP.FAVORITE_UPSERT && op.tempId === id) || null;
+  }
+
   function favByName(name) {
     if (!name) return null;
     const key = String(name).trim().toLowerCase();
@@ -55,6 +142,24 @@
     return null;
   }
 
+  function itemExistsByName(name) {
+    const key = String(name || '').trim().toLowerCase();
+    return [...byId.values()].some((it) => it.name.trim().toLowerCase() === key);
+  }
+
+  function showConn(msg, bad) {
+    conn.textContent = msg;
+    conn.classList.toggle('bad', !!bad);
+    conn.classList.add('show');
+    clearTimeout(connTimer);
+    connTimer = setTimeout(() => conn.classList.remove('show'), 2500);
+  }
+
+  function pendingSummary() {
+    if (!pendingOps.length) return '';
+    return pendingOps.length === 1 ? '1 change pending sync' : `${pendingOps.length} changes pending sync`;
+  }
+
   function render() {
     const items = [...byId.values()].sort((a, b) => {
       if (a.checked !== b.checked) return a.checked ? 1 : -1;
@@ -62,11 +167,17 @@
     });
     listTodo.innerHTML = '';
     listDone.innerHTML = '';
-    let nTodo = 0, nDone = 0;
+    let nTodo = 0;
+    let nDone = 0;
     for (const it of items) {
       const li = renderItem(it);
-      if (it.checked) { listDone.appendChild(li); nDone++; }
-      else            { listTodo.appendChild(li); nTodo++; }
+      if (it.checked) {
+        listDone.appendChild(li);
+        nDone += 1;
+      } else {
+        listTodo.appendChild(li);
+        nTodo += 1;
+      }
     }
     countTodo.textContent = String(nTodo);
     countDone.textContent = String(nDone);
@@ -79,8 +190,6 @@
       a.name.toLowerCase().localeCompare(b.name.toLowerCase())
     );
     favList.innerHTML = '';
-    // Names already on the active list — used to dim/disable matching favorites
-    // so we don't double-add the same thing.
     const onList = new Set(
       [...byId.values()].map((it) => it.name.trim().toLowerCase())
     );
@@ -126,10 +235,6 @@
     }
     countFav.textContent = String(favs.length);
     favEmpty.hidden = favs.length > 0;
-    // Hide the whole panel when there are zero favs AND the panel is collapsed,
-    // so we don't show an empty chrome to a user who's never starred anything.
-    // Once the user expands it, we keep it visible so the "no favorites yet"
-    // hint can teach them what stars do.
     const expanded = favToggle.getAttribute('aria-expanded') === 'true';
     favWrap.hidden = favs.length === 0 && !expanded;
   }
@@ -137,10 +242,10 @@
   function renderItem(it) {
     const li = document.createElement('li');
     const role = rosterFor(it.addedBy);
-    li.className = 'item' + (it.checked ? ' checked' : '') + (role ? ' ' + role.cls : '');
+    li.className = 'item' + (it.checked ? ' checked' : '') + (role ? ` ${role.cls}` : '');
+    if (it.pendingSync) li.classList.add('pending-sync');
     li.dataset.id = String(it.id);
 
-    // checkbox
     const cb = document.createElement('button');
     cb.type = 'button';
     cb.className = 'check';
@@ -148,7 +253,6 @@
     cb.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="3"><polyline points="2,9 6,13 14,3"/></svg>';
     cb.addEventListener('click', () => toggleChecked(it.id, !it.checked));
 
-    // body
     const body = document.createElement('div');
     body.className = 'body';
     const name = document.createElement('div');
@@ -162,9 +266,14 @@
       q.textContent = it.quantity;
       name.appendChild(q);
     }
+    if (it.pendingSync) {
+      const badge = document.createElement('span');
+      badge.className = 'qty pending-badge';
+      badge.textContent = 'offline';
+      name.appendChild(badge);
+    }
     body.appendChild(name);
 
-    // meta line: optional note text + colored "added by" chip
     if (it.notes || it.addedBy) {
       const meta = document.createElement('div');
       meta.className = 'meta';
@@ -176,18 +285,16 @@
       }
       if (it.addedBy) {
         const chip = document.createElement('span');
-        chip.className = 'by-chip' + (role ? ' ' + role.cls : '');
+        chip.className = 'by-chip' + (role ? ` ${role.cls}` : '');
         chip.textContent = role ? role.label : it.addedBy;
         meta.appendChild(chip);
       }
       body.appendChild(meta);
     }
 
-    // actions
     const actions = document.createElement('div');
     actions.className = 'actions';
 
-    // Star — toggle favorite for this item's name. Filled when favorited.
     const starBtn = document.createElement('button');
     starBtn.type = 'button';
     const isFav = !!favByName(it.name);
@@ -207,12 +314,14 @@
     editBtn.title = 'Edit';
     editBtn.textContent = 'Edit';
     editBtn.addEventListener('click', () => startEdit(li, it));
+
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.className = 'icon-btn danger';
     delBtn.title = 'Remove';
     delBtn.textContent = '\u2715';
     delBtn.addEventListener('click', () => removeItem(it.id));
+
     actions.appendChild(starBtn);
     actions.appendChild(editBtn);
     actions.appendChild(delBtn);
@@ -224,16 +333,16 @@
   }
 
   function startEdit(li, it) {
-    if (li.querySelector('.edit-row')) return; // already editing
+    if (li.querySelector('.edit-row')) return;
     const row = document.createElement('div');
     row.className = 'edit-row';
     row.innerHTML = `
       <input class="e-name" type="text" maxlength="80" />
-      <input class="e-qty"  type="text" maxlength="40" placeholder="qty" />
+      <input class="e-qty" type="text" maxlength="40" placeholder="qty" />
       <input class="e-note" type="text" maxlength="200" placeholder="notes" />
     `;
     row.querySelector('.e-name').value = it.name;
-    row.querySelector('.e-qty').value  = it.quantity;
+    row.querySelector('.e-qty').value = it.quantity;
     row.querySelector('.e-note').value = it.notes;
 
     const actions = document.createElement('div');
@@ -251,16 +360,22 @@
     body.appendChild(actions);
     row.querySelector('.e-name').focus();
 
-    const finishEdit = () => { row.remove(); actions.remove(); };
+    const finishEdit = () => {
+      row.remove();
+      actions.remove();
+    };
     cancel.addEventListener('click', finishEdit);
     save.addEventListener('click', async () => {
       const patch = {
-        name:     row.querySelector('.e-name').value.trim(),
+        name: row.querySelector('.e-name').value.trim(),
         quantity: row.querySelector('.e-qty').value.trim(),
-        notes:    row.querySelector('.e-note').value.trim(),
+        notes: row.querySelector('.e-note').value.trim(),
       };
-      if (!patch.name) { row.querySelector('.e-name').focus(); return; }
-      await api(`/api/items/${it.id}`, 'PATCH', patch);
+      if (!patch.name) {
+        row.querySelector('.e-name').focus();
+        return;
+      }
+      await patchItem(it.id, patch);
       finishEdit();
     });
     row.addEventListener('keydown', (e) => {
@@ -269,7 +384,6 @@
     });
   }
 
-  // --- API helpers ----------------------------------------------------------
   async function api(url, method = 'GET', body) {
     const opts = { method, headers: {} };
     if (body !== undefined) {
@@ -281,79 +395,304 @@
     return r.status === 204 ? null : r.json();
   }
 
-  async function loadAll() {
-    const { items } = await api('/api/items');
-    byId.clear();
-    for (const it of items) byId.set(it.id, it);
+  function replaceItemId(oldId, freshItem) {
+    byId.delete(oldId);
+    byId.set(freshItem.id, { ...freshItem, pendingSync: false });
+    persistItems();
     render();
-    renderFavorites(); // active list changed -> "already on list" badges may shift
+    renderFavorites();
+  }
+
+  function replaceFavoriteId(oldId, freshFavorite) {
+    favById.delete(oldId);
+    favById.set(freshFavorite.id, { ...freshFavorite, pendingSync: false });
+    persistFavorites();
+    renderFavorites();
+    render();
+  }
+
+  function markItemPending(item) {
+    byId.set(item.id, { ...item, pendingSync: true });
+    persistItems();
+    render();
+    renderFavorites();
+  }
+
+  function markFavoritePending(favorite) {
+    favById.set(favorite.id, { ...favorite, pendingSync: true });
+    persistFavorites();
+    renderFavorites();
+    render();
+  }
+
+  async function loadAll() {
+    const payload = await api('/api/items');
+    if (!Array.isArray(payload?.items)) throw new Error('Invalid items payload');
+    byId.clear();
+    for (const it of payload.items) byId.set(it.id, { ...it, pendingSync: false });
+    persistItems();
+    render();
+    renderFavorites();
   }
 
   async function loadFavorites() {
-    const { favorites } = await api('/api/favorites');
+    const payload = await api('/api/favorites');
+    if (!Array.isArray(payload?.favorites)) throw new Error('Invalid favorites payload');
     favById.clear();
-    for (const f of favorites) favById.set(f.id, f);
+    for (const f of payload.favorites) favById.set(f.id, { ...f, pendingSync: false });
+    persistFavorites();
     renderFavorites();
-    render(); // re-render items so star fills update
+    render();
+  }
+
+  async function refreshFromServer() {
+    await Promise.all([loadAll(), loadFavorites()]);
+  }
+
+  function queueStatusMessage() {
+    if (pendingOps.length) showConn(pendingSummary(), true);
   }
 
   async function addItem({ name, quantity, notes }) {
-    await api('/api/items', 'POST', {
-      name, quantity, notes,
+    const tempId = nextTempId('item');
+    const now = Date.now();
+    const item = {
+      id: tempId,
+      name,
+      quantity,
+      notes,
+      checked: false,
       addedBy: whoami.value.trim(),
+      createdAt: now,
+      updatedAt: now,
+      pendingSync: true,
+    };
+    markItemPending(item);
+    upsertPendingOp({
+      type: OP.ITEM_ADD,
+      tempId,
+      body: {
+        name,
+        quantity,
+        notes,
+        addedBy: item.addedBy,
+      },
     });
-  }
-  async function toggleChecked(id, checked) {
-    await api(`/api/items/${id}`, 'PATCH', { checked });
-  }
-  async function removeItem(id) {
-    await api(`/api/items/${id}`, 'DELETE');
-  }
-  async function clearChecked() {
-    await api('/api/items/clear-checked', 'POST');
+    showConn(navigator.onLine ? 'Saving…' : 'Saved offline on this phone', !navigator.onLine);
+    return flushQueue();
   }
 
-  // --- favorites actions ----------------------------------------------------
+  async function patchItem(id, patch) {
+    const current = byId.get(id);
+    if (!current) return;
+    const updated = {
+      ...current,
+      ...patch,
+      updatedAt: Date.now(),
+      pendingSync: true,
+    };
+    markItemPending(updated);
+
+    const pendingAdd = findPendingItemAdd(id);
+    if (pendingAdd) {
+      if (patch.name !== undefined) pendingAdd.body.name = patch.name;
+      if (patch.quantity !== undefined) pendingAdd.body.quantity = patch.quantity;
+      if (patch.notes !== undefined) pendingAdd.body.notes = patch.notes;
+      if (patch.checked !== undefined) {
+        removePendingOps((op) => op.type === OP.ITEM_PATCH && op.id === id);
+        upsertPendingOp({ type: OP.ITEM_PATCH, id, body: { checked: patch.checked } });
+      } else {
+        persistQueue();
+      }
+    } else {
+      removePendingOps((op) => op.type === OP.ITEM_PATCH && op.id === id);
+      upsertPendingOp({ type: OP.ITEM_PATCH, id, body: clone(patch) });
+    }
+
+    return flushQueue();
+  }
+
+  async function toggleChecked(id, checked) {
+    return patchItem(id, { checked });
+  }
+
+  async function removeItem(id) {
+    const current = byId.get(id);
+    if (!current) return;
+    byId.delete(id);
+    persistItems();
+    render();
+    renderFavorites();
+
+    const pendingAdd = findPendingItemAdd(id);
+    if (pendingAdd) {
+      removePendingOps((op) => op.tempId === id || op.id === id);
+    } else {
+      removePendingOps((op) =>
+        (op.type === OP.ITEM_PATCH || op.type === OP.ITEM_DELETE) && op.id === id
+      );
+      upsertPendingOp({ type: OP.ITEM_DELETE, id });
+    }
+
+    return flushQueue();
+  }
+
+  async function clearChecked() {
+    const checkedIds = [...byId.values()].filter((it) => it.checked).map((it) => it.id);
+    if (!checkedIds.length) return;
+
+    for (const id of checkedIds) byId.delete(id);
+    persistItems();
+    render();
+    renderFavorites();
+
+    removePendingOps((op) => {
+      if (op.type === OP.ITEM_CLEAR_CHECKED) return true;
+      if (op.type === OP.ITEM_ADD && checkedIds.includes(op.tempId)) return true;
+      if ((op.type === OP.ITEM_PATCH || op.type === OP.ITEM_DELETE) && checkedIds.includes(op.id)) return true;
+      return false;
+    });
+    upsertPendingOp({ type: OP.ITEM_CLEAR_CHECKED });
+    showConn(navigator.onLine ? 'Clearing cart…' : 'Cart cleared offline on this phone', !navigator.onLine);
+    return flushQueue();
+  }
+
   async function toggleFavoriteForItem(it) {
     const existing = favByName(it.name);
     if (existing) {
-      await api(`/api/favorites/${existing.id}`, 'DELETE');
-    } else {
-      await api('/api/favorites', 'POST', { name: it.name, quantity: it.quantity, notes: it.notes });
+      return removeFavorite(existing.id);
     }
+
+    const tempId = nextTempId('fav');
+    const favorite = {
+      id: tempId,
+      name: it.name,
+      quantity: it.quantity || '',
+      notes: it.notes || '',
+      createdAt: Date.now(),
+      pendingSync: true,
+    };
+    markFavoritePending(favorite);
+    upsertPendingOp({
+      type: OP.FAVORITE_UPSERT,
+      tempId,
+      body: {
+        name: favorite.name,
+        quantity: favorite.quantity,
+        notes: favorite.notes,
+      },
+    });
+    return flushQueue();
   }
+
   async function removeFavorite(id) {
-    await api(`/api/favorites/${id}`, 'DELETE');
+    const current = favById.get(id);
+    if (!current) return;
+    favById.delete(id);
+    persistFavorites();
+    renderFavorites();
+    render();
+
+    const pendingUpsert = findPendingFavoriteUpsert(id);
+    if (pendingUpsert) {
+      removePendingOps((op) => op.tempId === id);
+    } else {
+      removePendingOps((op) => op.type === OP.FAVORITE_DELETE && op.id === id);
+      upsertPendingOp({ type: OP.FAVORITE_DELETE, id, name: current.name });
+    }
+
+    return flushQueue();
   }
-  // Re-add a favorite to the active shopping list. Skip if it's already there
-  // (case-insensitive match) so a quick double-tap doesn't create duplicates.
+
   async function addFromFavorite(f) {
-    const onList = [...byId.values()].some(
-      (it) => it.name.trim().toLowerCase() === f.name.toLowerCase()
-    );
-    if (onList) {
+    if (itemExistsByName(f.name)) {
       showConn(`${f.name} is already on the list`, false);
       return;
     }
-    await addItem({ name: f.name, quantity: f.quantity || '', notes: f.notes });
+    return addItem({ name: f.name, quantity: f.quantity || '', notes: f.notes });
   }
 
-  // --- wire up form ---------------------------------------------------------
+  async function flushQueue() {
+    if (!pendingOps.length) return Promise.resolve();
+    if (!navigator.onLine) {
+      queueStatusMessage();
+      return Promise.resolve();
+    }
+    if (flushPromise) return flushPromise;
+
+    flushPromise = (async () => {
+      const tempIds = new Map();
+
+      while (pendingOps.length) {
+        const op = pendingOps[0];
+        try {
+          if (op.type === OP.ITEM_ADD) {
+            const created = await api('/api/items', 'POST', op.body);
+            tempIds.set(op.tempId, created.id);
+            replaceItemId(op.tempId, created);
+          } else if (op.type === OP.ITEM_PATCH) {
+            const id = tempIds.get(op.id) || op.id;
+            if (typeof id !== 'number') {
+              pendingOps.shift();
+              persistQueue();
+              continue;
+            }
+            const updated = await api(`/api/items/${id}`, 'PATCH', op.body);
+            byId.set(updated.id, { ...updated, pendingSync: false });
+            persistItems();
+            render();
+            renderFavorites();
+          } else if (op.type === OP.ITEM_DELETE) {
+            const id = tempIds.get(op.id) || op.id;
+            if (typeof id === 'number') {
+              await api(`/api/items/${id}`, 'DELETE');
+            }
+          } else if (op.type === OP.ITEM_CLEAR_CHECKED) {
+            await api('/api/items/clear-checked', 'POST');
+          } else if (op.type === OP.FAVORITE_UPSERT) {
+            const favorite = await api('/api/favorites', 'POST', op.body);
+            tempIds.set(op.tempId, favorite.id);
+            replaceFavoriteId(op.tempId, favorite);
+          } else if (op.type === OP.FAVORITE_DELETE) {
+            const id = tempIds.get(op.id) || op.id;
+            if (typeof id === 'number') {
+              await api(`/api/favorites/${id}`, 'DELETE');
+            } else if (op.name) {
+              await api(`/api/favorites?name=${encodeURIComponent(op.name)}`, 'DELETE');
+            }
+          }
+
+          pendingOps.shift();
+          persistQueue();
+        } catch (_) {
+          queueStatusMessage();
+          throw _;
+        }
+      }
+
+      showConn('Synced', false);
+      return true;
+    })().catch(() => {
+      queueStatusMessage();
+      return false;
+    }).finally(() => {
+      flushPromise = null;
+    });
+
+    return flushPromise;
+  }
+
   $('#add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = $('#f-name').value.trim();
     const quantity = $('#f-qty').value.trim();
     const notes = $('#f-note').value.trim();
     if (!name) return;
-    try {
-      await addItem({ name, quantity, notes });
-      $('#f-name').value = '';
-      $('#f-qty').value = '';
-      $('#f-note').value = '';
-      $('#f-name').focus();
-    } catch (err) {
-      showConn('Failed to add — retrying…', true);
-    }
+    await addItem({ name, quantity, notes });
+    $('#f-name').value = '';
+    $('#f-qty').value = '';
+    $('#f-note').value = '';
+    $('#f-name').focus();
   });
 
   doneBtn.addEventListener('click', () => {
@@ -361,68 +700,104 @@
     if (confirm(`Clear all ${n} item(s) from the cart?`)) clearChecked();
   });
 
-  // Favorites panel toggle (collapsed by default to keep the top of the
-  // screen quiet — it expands when the user wants to manage favorites).
   favToggle.addEventListener('click', () => {
     const expanded = favToggle.getAttribute('aria-expanded') === 'true';
     favToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
     favPanel.hidden = expanded;
-    // Re-evaluate auto-hide of the whole panel chrome when collapsing back.
     if (expanded) renderFavorites();
   });
-
-  // --- Server-Sent Events ---------------------------------------------------
-  let es;
-  let connTimer;
-  function showConn(msg, bad) {
-    conn.textContent = msg;
-    conn.classList.toggle('bad', !!bad);
-    conn.classList.add('show');
-    clearTimeout(connTimer);
-    connTimer = setTimeout(() => conn.classList.remove('show'), 2000);
-  }
 
   function connect() {
     if (es) es.close();
     es = new EventSource('/api/stream');
-    es.addEventListener('open', () => showConn('Connected', false));
+    es.addEventListener('open', async () => {
+      showConn('Connected', false);
+      const synced = await flushQueue();
+      try {
+        if (!pendingOps.length || synced) await refreshFromServer();
+      } catch (_) {
+        queueStatusMessage();
+      }
+    });
     es.addEventListener('error', () => {
-      showConn('Reconnecting…', true);
+      if (navigator.onLine) showConn('Trying to reconnect…', true);
+      else queueStatusMessage();
     });
     es.addEventListener('item:created', (e) => {
-      const it = JSON.parse(e.data); byId.set(it.id, it); render();
+      const it = JSON.parse(e.data);
+      byId.set(it.id, { ...it, pendingSync: false });
+      persistItems();
+      render();
+      renderFavorites();
     });
     es.addEventListener('item:updated', (e) => {
-      const it = JSON.parse(e.data); byId.set(it.id, it); render();
+      const it = JSON.parse(e.data);
+      byId.set(it.id, { ...it, pendingSync: false });
+      persistItems();
+      render();
+      renderFavorites();
     });
     es.addEventListener('item:deleted', (e) => {
-      const { id } = JSON.parse(e.data); byId.delete(id); render();
+      const { id } = JSON.parse(e.data);
+      byId.delete(id);
+      persistItems();
+      render();
+      renderFavorites();
     });
     es.addEventListener('items:cleared-checked', () => {
-      loadAll();
+      loadAll().catch(() => queueStatusMessage());
     });
     es.addEventListener('favorite:created', (e) => {
-      const f = JSON.parse(e.data); favById.set(f.id, f);
+      const f = JSON.parse(e.data);
+      favById.set(f.id, { ...f, pendingSync: false });
+      persistFavorites();
       renderFavorites();
-      render(); // star fills depend on favorites map
+      render();
     });
     es.addEventListener('favorite:deleted', (e) => {
-      const { id } = JSON.parse(e.data); favById.delete(id);
+      const { id } = JSON.parse(e.data);
+      favById.delete(id);
+      persistFavorites();
       renderFavorites();
       render();
     });
   }
 
-  // Refresh on tab refocus in case we missed events while suspended.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      loadAll();
-      loadFavorites();
+  window.addEventListener('online', async () => {
+    showConn('Back online - syncing phone changes…', false);
+    const synced = await flushQueue();
+    if (synced && !pendingOps.length) {
+      refreshFromServer().catch(() => queueStatusMessage());
     }
   });
 
-  // --- boot -----------------------------------------------------------------
-  Promise.all([loadAll(), loadFavorites()])
-    .catch(() => showConn('Could not reach server', true));
+  window.addEventListener('offline', () => {
+    showConn('Offline - changes stay on this phone', true);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      flushQueue().then((synced) => {
+        if (!pendingOps.length || synced) {
+          refreshFromServer().catch(() => queueStatusMessage());
+        }
+      });
+    }
+  });
+
+  restoreCachedState();
+  render();
+  renderFavorites();
+  if (pendingOps.length) queueStatusMessage();
+
+  flushQueue()
+    .then((synced) => {
+      if (!pendingOps.length || synced) return refreshFromServer();
+      return null;
+    })
+    .catch(() => {
+      if (!byId.size && !favById.size) showConn('Offline - using phone cache', true);
+      else queueStatusMessage();
+    });
   connect();
 })();
