@@ -464,7 +464,12 @@ public final class MainActivity extends Activity {
             } else if ("item:delete".equals(op.type)) {
                 api.deleteItem(op.targetId);
             } else if ("item:clearChecked".equals(op.type)) {
-                api.clearChecked();
+                try {
+                    api.clearChecked();
+                } catch (HomeNeedsApi.ApiException e) {
+                    if (e.status != 404) throw e;
+                    api.clearCheckedFallback();
+                }
             }
             store.deleteOp(op.id);
             main.post(this::render);

@@ -448,6 +448,19 @@
     return r.status === 204 ? null : r.json();
   }
 
+  async function clearCheckedOnServer() {
+    try {
+      return await api('/api/items/clear-checked', 'POST');
+    } catch (err) {
+      const payload = await api('/api/items');
+      const checkedItems = Array.isArray(payload?.items)
+        ? payload.items.filter((it) => it.checked && typeof it.id === 'number')
+        : [];
+      await Promise.all(checkedItems.map((it) => api(`/api/items/${it.id}`, 'DELETE')));
+      return { count: checkedItems.length };
+    }
+  }
+
   function replaceItemId(oldId, freshItem) {
     byId.delete(oldId);
     byId.set(freshItem.id, { ...freshItem, pendingSync: false });
@@ -724,7 +737,7 @@
               await api(`/api/items/${id}`, 'DELETE');
             }
           } else if (op.type === OP.ITEM_CLEAR_CHECKED) {
-            await api('/api/items/clear-checked', 'POST');
+            await clearCheckedOnServer();
           } else if (op.type === OP.FAVORITE_UPSERT) {
             const favorite = await api('/api/favorites', 'POST', op.body);
             tempIds.set(op.tempId, favorite.id);

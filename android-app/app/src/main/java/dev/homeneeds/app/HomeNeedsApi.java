@@ -13,6 +13,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class HomeNeedsApi {
+    static final class ApiException extends Exception {
+        final int status;
+
+        ApiException(String message, int status) {
+            super(message);
+            this.status = status;
+        }
+    }
+
     interface StreamListener {
         void onEvent(String event, JSONObject payload);
         void onDisconnected();
@@ -81,6 +90,12 @@ final class HomeNeedsApi {
         request("POST", "/api/items/clear-checked", new JSONObject());
     }
 
+    void clearCheckedFallback() throws Exception {
+        for (Models.Item item : fetchItems()) {
+            if (item.checked) deleteItem(item.id);
+        }
+    }
+
     void closeStream() {
         streamClosed = true;
     }
@@ -144,7 +159,7 @@ final class HomeNeedsApi {
                     error = text.toString();
                 }
             }
-            throw new IllegalStateException(method + " " + path + " -> " + status + " " + error);
+            throw new ApiException(method + " " + path + " -> " + status + " " + error, status);
         }
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
             StringBuilder text = new StringBuilder();
