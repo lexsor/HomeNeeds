@@ -10,8 +10,10 @@ A small self-hosted webapp for a family of 4 to share a single shopping list. An
 - **Favorites (★)** — star any item to save it as a shared family favorite. A collapsible "Favorites" panel above the list lets anyone re-add a favorite to the list with one tap (saved quantity and notes come along)
 - **Done shopping** button — big primary button that clears the entire cart in one tap when you're back from the store
 - Optional per-device "You:" name — items are tagged with who added them
+- Simple open profile per device: display name and a highlight color for new list additions
 - Real-time sync across all connected devices
 - Offline-first phone/PWA mode: the latest list and favorites are cached on-device, and changes made while offline sync back to the server when the phone reconnects
+- Native Android app source under `android-app/`, configured to sync with the same API
 - Mobile-first layout
 
 ## Stack
@@ -58,9 +60,12 @@ npm start
 
 | Method | Path                          | Body                                              | Returns               |
 | ------ | ----------------------------- | ------------------------------------------------- | --------------------- |
+| GET    | `/api/profile`                | `X-Client-Id` header or `clientId` query          | profile               |
+| PUT    | `/api/profile`                | `{ clientId?, displayName?, highlightColor? }`    | saved profile         |
 | GET    | `/api/items`                  | —                                                 | `{ items: [] }`       |
-| POST   | `/api/items`                  | `{ name, quantity?, notes?, addedBy? }`           | created item          |
+| POST   | `/api/items`                  | `{ name, quantity?, notes?, addedBy?, addedByColor? }` | created item    |
 | PATCH  | `/api/items/:id`              | any of `{ name, quantity, notes, checked }`       | updated item          |
+| POST   | `/api/items/:id`              | Android-friendly alias for the same patch body    | updated item          |
 | DELETE | `/api/items/:id`              | —                                                 | 204                   |
 | POST   | `/api/items/clear-checked`    | —                                                 | `{ count }`           |
 | GET    | `/api/favorites`              | —                                                 | `{ favorites: [] }`   |
@@ -70,7 +75,25 @@ npm start
 | GET    | `/api/stream`                 | (SSE)                                             | live events           |
 | GET    | `/api/health`                 | —                                                 | `{ ok: true }`        |
 
-SSE event names: `item:created`, `item:updated`, `item:deleted`, `items:cleared-checked`, `favorite:created`, `favorite:deleted`.
+SSE event names: `item:created`, `item:updated`, `item:deleted`, `items:cleared-checked`, `favorite:created`, `favorite:deleted`, `profile:updated`.
+
+## Android app
+
+The native Android project lives in `android-app/`. It is intentionally dependency-light: Java, platform SQLite, SharedPreferences, `HttpURLConnection`, and an SSE reader.
+
+Defaults:
+
+- API server: `http://10.10.0.6:3000`
+- Auth: none for now
+- Profile identity: generated per install as an `X-Client-Id`
+- Local storage: on-device SQLite cache plus a small pending-operation queue
+
+To build it on a machine with Android Studio or the Android SDK/Gradle installed:
+
+```bash
+cd android-app
+./gradlew assembleDebug
+```
 
 ## Configuration
 

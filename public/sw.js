@@ -7,7 +7,7 @@
 //
 // Bump CACHE_VERSION to force clients to purge old caches after a deploy.
 
-const CACHE_VERSION = 'home-needs-v4';
+const CACHE_VERSION = 'home-needs-v5';
 const SHELL_CACHE   = `${CACHE_VERSION}-shell`;
 const API_CACHE     = `${CACHE_VERSION}-api`;
 

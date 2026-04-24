@@ -9,6 +9,7 @@
   const doneBtn = $('#done-shopping');
   const conn = $('#conn');
   const whoami = $('#whoami');
+  const highlightColor = $('#highlight-color');
 
   // Favorites elements
   const favWrap = $('#favorites-wrap');
@@ -19,12 +20,26 @@
   const countFav = $('#count-fav');
 
   const STORAGE_KEYS = {
+    clientId: 'fsl:client-id',
     whoami: 'fsl:whoami',
+    highlightColor: 'fsl:highlight-color',
     items: 'fsl:items-cache',
     favorites: 'fsl:favorites-cache',
     queue: 'fsl:pending-ops',
     tempSeq: 'fsl:temp-seq',
   };
+
+  const DEFAULT_HIGHLIGHT_COLOR = '#3b82f6';
+  const HIGHLIGHT_COLORS = new Set([
+    '#ef4444',
+    '#f97316',
+    '#facc15',
+    '#22c55e',
+    '#14b8a6',
+    '#3b82f6',
+    '#a855f7',
+    '#ec4899',
+  ]);
 
   const OP = {
     ITEM_ADD: 'item:add',
@@ -47,10 +62,43 @@
     return ROSTER[String(name).trim().toLowerCase()] || null;
   }
 
+  function getClientId() {
+    let clientId = localStorage.getItem(STORAGE_KEYS.clientId);
+    if (!clientId) {
+      const random = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      clientId = `web:${random}`;
+      localStorage.setItem(STORAGE_KEYS.clientId, clientId);
+    }
+    return clientId;
+  }
+
+  const clientId = getClientId();
+
+  function normalizeColor(value) {
+    const color = String(value || '').trim().toLowerCase();
+    return HIGHLIGHT_COLORS.has(color) ? color : DEFAULT_HIGHLIGHT_COLOR;
+  }
+
+  function paintColorSelect() {
+    highlightColor.style.backgroundColor = normalizeColor(highlightColor.value);
+  }
+
   whoami.value = localStorage.getItem(STORAGE_KEYS.whoami) || '';
-  whoami.addEventListener('input', () => {
+  highlightColor.value = normalizeColor(localStorage.getItem(STORAGE_KEYS.highlightColor));
+  paintColorSelect();
+
+  let profileTimer;
+  function scheduleProfileSave() {
     localStorage.setItem(STORAGE_KEYS.whoami, whoami.value.trim());
-  });
+    localStorage.setItem(STORAGE_KEYS.highlightColor, normalizeColor(highlightColor.value));
+    paintColorSelect();
+    clearTimeout(profileTimer);
+    profileTimer = setTimeout(() => {
+      saveProfile().catch(() => showConn('Profile saved on this device only', true));
+    }, 350);
+  }
+  whoami.addEventListener('input', scheduleProfileSave);
+  highlightColor.addEventListener('change', scheduleProfileSave);
 
   /** @type {Map<number|string, object>} */
   const byId = new Map();
@@ -243,6 +291,10 @@
     const li = document.createElement('li');
     const role = rosterFor(it.addedBy);
     li.className = 'item' + (it.checked ? ' checked' : '') + (role ? ` ${role.cls}` : '');
+    if (!role && it.addedByColor) {
+      li.style.setProperty('--stripe', normalizeColor(it.addedByColor));
+      li.classList.add('by-custom');
+    }
     if (it.pendingSync) li.classList.add('pending-sync');
     li.dataset.id = String(it.id);
 
@@ -286,6 +338,7 @@
       if (it.addedBy) {
         const chip = document.createElement('span');
         chip.className = 'by-chip' + (role ? ` ${role.cls}` : '');
+        if (!role && it.addedByColor) chip.style.setProperty('--chip', normalizeColor(it.addedByColor));
         chip.textContent = role ? role.label : it.addedBy;
         meta.appendChild(chip);
       }
@@ -385,7 +438,7 @@
   }
 
   async function api(url, method = 'GET', body) {
-    const opts = { method, headers: {} };
+    const opts = { method, headers: { 'X-Client-Id': clientId } };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -445,8 +498,29 @@
     render();
   }
 
+  async function loadProfile() {
+    const profile = await api('/api/profile');
+    if (profile?.displayName !== undefined) {
+      whoami.value = profile.displayName || whoami.value;
+      localStorage.setItem(STORAGE_KEYS.whoami, whoami.value.trim());
+    }
+    if (profile?.highlightColor) {
+      highlightColor.value = normalizeColor(profile.highlightColor);
+      paintColorSelect();
+      localStorage.setItem(STORAGE_KEYS.highlightColor, normalizeColor(highlightColor.value));
+    }
+  }
+
+  async function saveProfile() {
+    return api('/api/profile', 'PUT', {
+      clientId,
+      displayName: whoami.value.trim(),
+      highlightColor: normalizeColor(highlightColor.value),
+    });
+  }
+
   async function refreshFromServer() {
-    await Promise.all([loadAll(), loadFavorites()]);
+    await Promise.all([loadAll(), loadFavorites(), loadProfile()]);
   }
 
   function queueStatusMessage() {
@@ -463,6 +537,7 @@
       notes,
       checked: false,
       addedBy: whoami.value.trim(),
+      addedByColor: normalizeColor(highlightColor.value),
       createdAt: now,
       updatedAt: now,
       pendingSync: true,
@@ -476,6 +551,7 @@
         quantity,
         notes,
         addedBy: item.addedBy,
+        addedByColor: normalizeColor(highlightColor.value),
       },
     });
     showConn(navigator.onLine ? 'Saving…' : 'Saved offline on this phone', !navigator.onLine);
@@ -760,6 +836,15 @@
       persistFavorites();
       renderFavorites();
       render();
+    });
+    es.addEventListener('profile:updated', (e) => {
+      const profile = JSON.parse(e.data);
+      if (profile.clientId !== clientId) return;
+      whoami.value = profile.displayName || '';
+      highlightColor.value = normalizeColor(profile.highlightColor);
+      paintColorSelect();
+      localStorage.setItem(STORAGE_KEYS.whoami, whoami.value.trim());
+      localStorage.setItem(STORAGE_KEYS.highlightColor, normalizeColor(highlightColor.value));
     });
   }
 

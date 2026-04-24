@@ -22,8 +22,16 @@ db.exec(`
     notes      TEXT    NOT NULL DEFAULT '',
     checked    INTEGER NOT NULL DEFAULT 0,
     added_by   TEXT    NOT NULL DEFAULT '',
+    added_by_color TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS profiles (
+    client_id       TEXT PRIMARY KEY,
+    display_name    TEXT NOT NULL DEFAULT '',
+    highlight_color TEXT NOT NULL DEFAULT '#3b82f6',
+    updated_at      INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS favorites (
@@ -42,11 +50,27 @@ const favoriteColumns = db.prepare(`PRAGMA table_info(favorites)`).all();
 if (!favoriteColumns.some((column) => column.name === 'quantity')) {
   db.exec(`ALTER TABLE favorites ADD COLUMN quantity TEXT NOT NULL DEFAULT ''`);
 }
+const itemColumns = db.prepare(`PRAGMA table_info(items)`).all();
+if (!itemColumns.some((column) => column.name === 'added_by_color')) {
+  db.exec(`ALTER TABLE items ADD COLUMN added_by_color TEXT NOT NULL DEFAULT ''`);
+}
+
+const DEFAULT_HIGHLIGHT_COLOR = '#3b82f6';
+const VALID_COLORS = new Set([
+  '#ef4444',
+  '#f97316',
+  '#facc15',
+  '#22c55e',
+  '#14b8a6',
+  '#3b82f6',
+  '#a855f7',
+  '#ec4899',
+]);
 
 const stmts = {
   listAll:    db.prepare('SELECT * FROM items ORDER BY checked ASC, created_at ASC'),
-  insert:     db.prepare(`INSERT INTO items (name, quantity, notes, added_by, created_at, updated_at)
-                          VALUES (?, ?, ?, ?, ?, ?)`),
+  insert:     db.prepare(`INSERT INTO items (name, quantity, notes, added_by, added_by_color, created_at, updated_at)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)`),
   getById:    db.prepare('SELECT * FROM items WHERE id = ?'),
   update:     db.prepare(`UPDATE items SET name = ?, quantity = ?, notes = ?, updated_at = ? WHERE id = ?`),
   setChecked: db.prepare('UPDATE items SET checked = ?, updated_at = ? WHERE id = ?'),
@@ -61,6 +85,14 @@ const stmts = {
   favUpdate:         db.prepare('UPDATE favorites SET quantity = ?, notes = ? WHERE id = ?'),
   favRemoveById:     db.prepare('DELETE FROM favorites WHERE id = ?'),
   favRemoveByName:   db.prepare('DELETE FROM favorites WHERE name = ? COLLATE NOCASE'),
+
+  profileGet:    db.prepare('SELECT * FROM profiles WHERE client_id = ?'),
+  profileUpsert: db.prepare(`INSERT INTO profiles (client_id, display_name, highlight_color, updated_at)
+                             VALUES (?, ?, ?, ?)
+                             ON CONFLICT(client_id) DO UPDATE SET
+                               display_name = excluded.display_name,
+                               highlight_color = excluded.highlight_color,
+                               updated_at = excluded.updated_at`),
 };
 
 function rowToItem(r) {
@@ -71,6 +103,7 @@ function rowToItem(r) {
     notes: r.notes,
     checked: !!r.checked,
     addedBy: r.added_by,
+    addedByColor: r.added_by_color || '',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -84,6 +117,41 @@ function rowToFavorite(r) {
     notes: r.notes,
     createdAt: r.created_at,
   };
+}
+
+function normalizeClientId(value) {
+  return String(value || 'public')
+    .trim()
+    .slice(0, 80)
+    .replace(/[^a-zA-Z0-9:_-]/g, '') || 'public';
+}
+
+function clientIdFrom(req) {
+  return normalizeClientId(req.get('X-Client-Id') || req.query?.clientId || req.body?.clientId);
+}
+
+function normalizeHighlightColor(value) {
+  const color = String(value || '').trim().toLowerCase();
+  if (/^#[0-9a-f]{6}$/.test(color)) return color;
+  return DEFAULT_HIGHLIGHT_COLOR;
+}
+
+function publicHighlightColor(value) {
+  const color = normalizeHighlightColor(value);
+  return VALID_COLORS.has(color) ? color : DEFAULT_HIGHLIGHT_COLOR;
+}
+
+function rowToProfile(r, clientId) {
+  return {
+    clientId,
+    displayName: r?.display_name || '',
+    highlightColor: r?.highlight_color || DEFAULT_HIGHLIGHT_COLOR,
+    updatedAt: r?.updated_at || 0,
+  };
+}
+
+function getProfile(clientId) {
+  return rowToProfile(stmts.profileGet.get(clientId), clientId);
 }
 
 // --- SSE broadcast ----------------------------------------------------------
@@ -102,6 +170,21 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+app.get('/api/profile', (req, res) => {
+  res.json(getProfile(clientIdFrom(req)));
+});
+
+app.put('/api/profile', (req, res) => {
+  const clientId = clientIdFrom(req);
+  const displayName = String(req.body?.displayName || '').trim().slice(0, 40);
+  const highlightColor = publicHighlightColor(req.body?.highlightColor);
+  const now = Date.now();
+  stmts.profileUpsert.run(clientId, displayName, highlightColor, now);
+  const profile = getProfile(clientId);
+  broadcast('profile:updated', profile);
+  res.json(profile);
+});
+
 app.get('/api/items', (req, res) => {
   const items = stmts.listAll.all().map(rowToItem);
   res.json({ items });
@@ -112,15 +195,17 @@ app.post('/api/items', (req, res) => {
   if (!name) return res.status(400).json({ error: 'name is required' });
   const quantity = String(req.body?.quantity || '').trim().slice(0, 40);
   const notes    = String(req.body?.notes    || '').trim().slice(0, 200);
-  const addedBy  = String(req.body?.addedBy  || '').trim().slice(0, 40);
+  const profile = getProfile(clientIdFrom(req));
+  const addedBy  = String(req.body?.addedBy || profile.displayName || '').trim().slice(0, 40);
+  const addedByColor = publicHighlightColor(req.body?.addedByColor || profile.highlightColor);
   const now = Date.now();
-  const info = stmts.insert.run(name.slice(0, 80), quantity, notes, addedBy, now, now);
+  const info = stmts.insert.run(name.slice(0, 80), quantity, notes, addedBy, addedByColor, now, now);
   const item = rowToItem(stmts.getById.get(info.lastInsertRowid));
   broadcast('item:created', item);
   res.status(201).json(item);
 });
 
-app.patch('/api/items/:id', (req, res) => {
+function updateItemHandler(req, res) {
   const id = parseInt(req.params.id, 10);
   const row = stmts.getById.get(id);
   if (!row) return res.status(404).json({ error: 'not found' });
@@ -139,7 +224,12 @@ app.patch('/api/items/:id', (req, res) => {
   const item = rowToItem(stmts.getById.get(id));
   broadcast('item:updated', item);
   res.json(item);
-});
+}
+
+app.patch('/api/items/:id', updateItemHandler);
+// Android's platform HttpURLConnection is inconsistent about PATCH support, so
+// the native app can use POST for the same partial-update semantics.
+app.post('/api/items/:id', updateItemHandler);
 
 app.delete('/api/items/:id', (req, res) => {
   const id = parseInt(req.params.id, 10);
