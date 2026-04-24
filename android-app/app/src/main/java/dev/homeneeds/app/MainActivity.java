@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -12,13 +13,10 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 
 import org.json.JSONObject;
@@ -60,7 +58,7 @@ public final class MainActivity extends Activity {
     private EditText quantityInput;
     private EditText notesInput;
     private EditText displayNameInput;
-    private Spinner colorSpinner;
+    private Button colorSwatchButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -105,12 +103,20 @@ public final class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0f172a"));
 
-        LinearLayout top = row();
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(14), dp(12), dp(14), dp(10));
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.VERTICAL);
+        top.setPadding(dp(14), dp(30), dp(14), dp(10));
         TextView title = label("HomeNeeds", 20, "#e8eefc");
         title.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1));
+        top.addView(title, full(dp(34)));
+
+        LinearLayout profileRow = row();
+        profileRow.setGravity(Gravity.CENTER_VERTICAL);
+        profileRow.setPadding(0, dp(6), 0, 0);
+
+        TextView nameLabel = label("Display name", 13, "#94a3c4");
+        nameLabel.setGravity(Gravity.CENTER_VERTICAL);
+        profileRow.addView(nameLabel, new LinearLayout.LayoutParams(dp(92), dp(44)));
 
         displayNameInput = input("name");
         displayNameInput.setText(profile.displayName);
@@ -118,20 +124,16 @@ public final class MainActivity extends Activity {
         displayNameInput.setOnFocusChangeListener((view, hasFocus) -> {
             if (!hasFocus) saveProfile();
         });
-        top.addView(displayNameInput, new LinearLayout.LayoutParams(dp(92), dp(42)));
+        profileRow.addView(displayNameInput, new LinearLayout.LayoutParams(0, dp(44), 1));
 
-        colorSpinner = new Spinner(this);
-        colorSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, COLOR_NAMES));
-        colorSpinner.setSelection(colorIndex(profile.highlightColor));
-        colorSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                profile.highlightColor = COLOR_VALUES[position];
-                prefs.edit().putString("highlightColor", profile.highlightColor).apply();
-                saveProfile();
-            }
-            @Override public void onNothingSelected(AdapterView<?> parent) {}
-        });
-        top.addView(colorSpinner, new LinearLayout.LayoutParams(dp(106), dp(42)));
+        colorSwatchButton = button("", profile.highlightColor, "#ffffff");
+        colorSwatchButton.setText(" ");
+        colorSwatchButton.setContentDescription("Highlight color");
+        colorSwatchButton.setOnClickListener(v -> showColorPicker());
+        LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(48), dp(44));
+        swatchParams.leftMargin = dp(10);
+        profileRow.addView(colorSwatchButton, swatchParams);
+        top.addView(profileRow);
         root.addView(top);
 
         LinearLayout form = new LinearLayout(this);
@@ -440,7 +442,7 @@ public final class MainActivity extends Activity {
         }
         main.post(() -> {
             displayNameInput.setText(profile.displayName);
-            colorSpinner.setSelection(colorIndex(profile.highlightColor));
+            updateColorSwatch();
             render();
         });
     }
@@ -512,6 +514,66 @@ public final class MainActivity extends Activity {
         button.setBackgroundColor(Color.parseColor(bg));
         button.setAllCaps(false);
         return button;
+    }
+
+    private void showColorPicker() {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(8), dp(6), dp(8), dp(6));
+        list.setBackgroundColor(Color.parseColor("#111c34"));
+
+        for (int i = 0; i < COLOR_VALUES.length; i++) {
+            LinearLayout option = row();
+            option.setGravity(Gravity.CENTER_VERTICAL);
+            option.setPadding(dp(8), dp(6), dp(8), dp(6));
+            option.setBackgroundColor(Color.parseColor("#111c34"));
+
+            View swatch = new View(this);
+            swatch.setBackgroundColor(Color.parseColor(COLOR_VALUES[i]));
+            option.addView(swatch, new LinearLayout.LayoutParams(dp(34), dp(34)));
+
+            TextView name = label(COLOR_NAMES[i], 16, "#e8eefc");
+            name.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(0, dp(42), 1);
+            nameParams.leftMargin = dp(12);
+            option.addView(name, nameParams);
+
+            list.addView(option, full(dp(48)));
+        }
+
+        TextView title = label("Highlight color", 20, "#e8eefc");
+        title.setPadding(dp(24), dp(20), dp(24), dp(8));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setCustomTitle(title)
+                .setView(list)
+                .setNegativeButton("Cancel", null)
+                .create();
+
+        dialog.setOnShowListener(d -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.parseColor("#111c34")));
+            }
+        });
+
+        for (int i = 0; i < list.getChildCount(); i++) {
+            list.getChildAt(i).setOnClickListener(v -> {
+                LinearLayout option = (LinearLayout) v;
+                int index = list.indexOfChild(option);
+                profile.highlightColor = COLOR_VALUES[index];
+                prefs.edit().putString("highlightColor", profile.highlightColor).apply();
+                updateColorSwatch();
+                saveProfile();
+                dialog.dismiss();
+            });
+        }
+        dialog.show();
+    }
+
+    private void updateColorSwatch() {
+        if (colorSwatchButton != null) {
+            colorSwatchButton.setBackgroundColor(parseColor(profile.highlightColor, Models.DEFAULT_COLOR));
+        }
     }
 
     private TextView label(String text, int sp, String color) {
